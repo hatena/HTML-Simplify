@@ -7,7 +7,6 @@ use HTML::TreeBuilder;
 use HTML::Element;
 
 use HTML::Simplify::Regexp;
-use Data::Dumper;
 
 use base qw/Class::Accessor::Lvalue::Fast/;
 __PACKAGE__->mk_accessors(qw/document flags debug/);
