@@ -10,7 +10,7 @@ use HTML::Simplify::Regexp;
 use Data::Dumper;
 
 use base qw/Class::Accessor::Lvalue::Fast/;
-__PACKAGE__->mk_accessors(qw/document flags/);
+__PACKAGE__->mk_accessors(qw/document flags debug/);
 
 use constant FLAG_STRIP_UNLIKELYS => 0x1;
 use constant FLAG_WEIGHT_CLASSES  => 0x2;
@@ -47,7 +47,7 @@ sub remove_flag {
 
 sub get_suggested_direction {
     my ($self,$text) = @_;
-    $text =~ s/@\w+//;
+    $text =~ s/@\w+//g;
 
     my @count_heb = $text =~ /[\\u05B0-\\u05F4\\uFB1D-\\uFBF4]/g;
     my @count_arb = $text =~ /[\\u060C-\\u06FE\\uFB50-\\uFEFC]/g
@@ -60,15 +60,16 @@ sub get_suggested_direction {
 
 sub initialize_node {
     my ($self, $node) = @_;
-    $node->{_readability} = {content_score => 0};
+    $node->attr('readability',0);
 
     if ( $node->tag eq 'div') {
-        $node->{_readability}{content_score} += 5
+        $node->attr('readability', $node->attr('readability') + 5)
 
     } elsif ($node->tag eq 'pre' ||
              $node->tag eq 'td'  ||
              $node->tag eq 'blockquote') {
-        $node->{_readability}{content_score} += 3;
+        $node->attr('readability', $node->attr('readability') + 3)
+
 
     } elsif ($node->tag eq 'address' ||
              $node->tag eq 'ol' ||
@@ -78,8 +79,7 @@ sub initialize_node {
              $node->tag eq 'dt' ||
              $node->tag eq 'li' ||
              $node->tag eq 'form' ) {
-        $node->{_readability}{content_score} -= 3;
-
+        $node->attr('readability', $node->attr('readability') - 3)
     } elsif ($node->tag eq 'h1' ||
              $node->tag eq 'h2' ||
              $node->tag eq 'h3' ||
@@ -87,9 +87,25 @@ sub initialize_node {
              $node->tag eq 'h5' ||
              $node->tag eq 'h6' ||
              $node->tag eq 'th' ) {
-        $node->{_readability}{content_score} -= 5;
+        $node->attr('readability', $node->attr('readability') - 5)
     }
-    $node->{_readability}{content_score} += $self->get_class_weight($node);
+    $node->attr(
+        'readability',
+        $node->attr('readability') + $self->get_class_weight($node)
+    );
+}
+
+sub remove_scripts {
+    my ($self, $doc) = @_;
+    my @scripts = $doc->find('script');
+
+    for (@scripts) {
+        if ( !$_->attr('src') ||
+             index($_->attr('src'), 'readability') < 0 ||
+             index($_->attr('src'), 'typekit') < 0 ) {
+            $_->delete;
+        }
+    }
 }
 
 sub get_class_weight {
@@ -97,7 +113,6 @@ sub get_class_weight {
     if (!$self->flag_is_active(FLAG_WEIGHT_CLASSES)) {
         return 0;
     }
-
     my $weight = 0;
 
     #Look for a special classname
@@ -165,7 +180,7 @@ sub get_article_title { #Not Suitable for Japanese Web Sites
             $cur_title = $h_ones[0]->as_text;
         }
     }
-    $cur_title =~ s/$HTML::Simplify::Regexp::trim//g;
+    $cur_title =~ s/$HTML::Simplify::Regexp::trim//gi;
 
     my @words = split(' ', $cur_title);
     if ( @words <= 4 ) {
@@ -218,7 +233,7 @@ sub clean_styles {
             if ( ref $cur ) {
                 # Remove style attribute(s) :
                 if ( !$e->attr('class') || $e->attr('class') ne 'readability-styled' ) {
-                    $cur->attr("style","");
+                    $cur->attr("style",undef);
                 }
                 $self->clean_styles($cur);
             }
@@ -242,34 +257,48 @@ sub get_char_count {
 
 sub clean_conditionally {
     my ($self, $e, $tag) = @_;
-
     return unless $self->flag_is_active(FLAG_CLEAN_CONDITIONALLY);
 
-    my @tag_list = $e->find($tag);
-    my $cur_tags_length = @tag_list;
+    my @tag_list = grep { $_ != $e } $e->find($tag);
 
     # Gather counts for other typical elements embedded within.
     # Traverse backwards so we can remove nodes at the same time without effecting the traversal.
     # TODO: Consider taking into account original contentScore here.
-
+    my $count = 0;
     for my $cur_elm (reverse @tag_list) {
         my $weight = $self->get_class_weight($cur_elm);
-        my $content_score
-            = $cur_elm->{_readability} ? $cur_elm->{_readability}{content_score} : 0;
-        warn sprintf "%s:%s", $cur_elm->tag, $cur_elm->{_readability}{content_score};
+        my $content_score = 0;
+
+        if ( ref $cur_elm && $cur_elm->attr('readability') ) {
+            $content_score += $cur_elm->attr('readability');
+        }
+
+        if ($self->debug) {
+            warn sprintf "Cleaning Conditionally %s (%s:%s) %s",
+                $cur_elm->tag, ($cur_elm->attr('class') || '') ,( $cur_elm->id || '' ),
+                $weight + $content_score;
+        }
+
         if ( $weight + $content_score < 0 ) {
             $cur_elm->delete;
         } elsif ( $self->get_char_count($cur_elm,',') < 10) {
             # If there are not very many commas, and the number of
             # non-paragraph elements is more than paragraphs or other ominous signs, remove the element.
-            my @_p     = $cur_elm->find("p");
+            my @_p  = grep { $_ != $cur_elm } $cur_elm->find("p");
             my $p = @_p;
-            my @_img   = $cur_elm->find("img");
-            my $img = @_img;
-            my @_li    = $cur_elm->find("li");
-            my $li = @_li - 100;
-            my @_input = $cur_elm->find("input");
+            my @_img = grep { $_ != $cur_elm } $cur_elm->find("img");
+            my $img   = @_img;;
+            my @_li = grep { $_ != $cur_elm } $cur_elm->find("li");
+            my $li    = @_li - 100;
+            my @_input = grep { $_ != $cur_elm } $cur_elm->find("input");
             my $input = @_input;
+
+            if ($self->debug) {
+                warn sprintf "Cleaning Conditionally %s (%s:%s) %s\n p: %d img: %d li: %d input:%d",
+                    $cur_elm->tag, ($cur_elm->attr('class') || '') ,( $cur_elm->id || '' ),
+                    $weight + $content_score, $p, $img, $li, $input;
+            }
+
 
             my $embed_count = 0;
             my @embeds = $cur_elm->find("embed");
@@ -278,7 +307,6 @@ sub clean_conditionally {
                     $embed_count += 1;
                 }
             }
-
             my $link_density = $self->get_link_density($cur_elm);
             my $content_length = length $self->get_inner_text($cur_elm);
             my $to_remove = 0;
@@ -300,6 +328,7 @@ sub clean_conditionally {
             }
 
             if( $to_remove ) {
+                warn 'DELETE By Cleaning Conditinally';
                 $cur_elm->delete;
             }
         }
@@ -372,6 +401,7 @@ sub prep_article {
     $self->clean_conditionally($article_content, "table");
     $self->clean_conditionally($article_content, "ul");
     $self->clean_conditionally($article_content, "div");
+
     #Remove extra paragraphs
     my @article_paragraphs = $article_content->find('p');
     for my $ap (@article_paragraphs) {
@@ -379,7 +409,7 @@ sub prep_article {
         my @embed = $ap->find('embed');
         my @object = $ap->find('object');
 
-        if ( @img == 0 && @embed == 0 && @object == 0 && $self->get_inner_text($ap,0) ) {
+        if ( @img == 0 && @embed == 0 && @object == 0 && !$self->get_inner_text($ap,0) ) {
             $ap->delete;
         }
     }
@@ -408,31 +438,39 @@ sub grab_article {
         if ($strip_unlikely_candidates) {
             my $unlikely_match_string = ($node->attr('class') || '' ) . ($node->id || '');
             if (
-                $unlikely_match_string =~ /$HTML::Simplify::Regexp::unlikely_candidate/ &&
-                $unlikely_match_string =~ /$HTML::Simplify::Regexp::ok_maybe_its_a_candidate/ &&
+                $unlikely_match_string =~ /$HTML::Simplify::Regexp::unlikely_candidate/g &&
+                $unlikely_match_string !~ /$HTML::Simplify::Regexp::ok_maybe_its_a_candidate/g &&
                 $node->tag ne "body"
             ) {
+                if ( $self->debug ) {
+                    warn "Removing unlikely candidate - " . $unlikely_match_string;
+                }
                 $node->delete;
                 next;
             }
         }
 
-        if ( $node->tag eq "p" || $node->tag eq "td" || $node->tag eq "pre") {
+        if ( $node->tag && ($node->tag eq "p" || $node->tag eq "td" || $node->tag eq "pre")) {
             push @nodes_to_score, $node;
         }
 
         #Turn all divs that don't have children block level elements into p's
-        if ( $node->tag eq "div") {
-            if ($node->inner_HTML !~ /$HTML::Simplify::Regexp::div_to_p_elements/ ) {
+        if ( $node->tag && $node->tag eq "div") {
+            if ($node->inner_HTML !~ /$HTML::Simplify::Regexp::div_to_p_elements/g ) {
                 $node->tag('p');
                 push @nodes_to_score, $node;
             } else {
                 # EXPERIMENTAL
-                my @children;
+                if ( $self->debug ) {
+                    warn sprintf "dvi_to_p %s(%s:%s)",
+                        $node->tag, ($node->attr('class') ||''), ($node->id || '');
+                }
                 for my $child_ref ($node->content_refs_list) {
                     next if ref $$child_ref;
 
                     my $p = HTML::Element->new('p');
+                    $p->attr('style',"display: inline");
+                    $p->attr('class','readability-styled');
                     $p->push_content($$child_ref);
                     $child_ref = \$p;
                 }
@@ -444,26 +482,36 @@ sub grab_article {
     #A score is determined by things like number of commas, class names, etc. Maybe eventually link density.
     my @candidates;
     for my $node (@nodes_to_score) {
+
         my $parent_node = $node->parent;
         my $grand_parent_node = $parent_node ? $parent_node->parent : undef;
         my $inner_text  = $self->get_inner_text($node);
+
+        if ( $self->debug ) {
+            warn sprintf "NodesToScore: %s(%s:%s:%d) %s",
+                $node->tag, ($node->attr('class') || '') ,
+                ( $node->id || '' ), length $inner_text,
+                ($parent_node ? ($parent_node->tag . ' ' .($parent_node->attr('class') ||'') ): 'NoParent');
+        }
+
         if (!$parent_node || !$parent_node->tag) {
             next;
         }
 
         #If this paragraph is less than 25 characters, don't even count it.
         next if length $inner_text < 25;
+
         # Initialize readability data for the parent.
-        unless ( $parent_node->{_readability} ) {
+        unless ( defined $parent_node->attr('readability') ) {
             $self->initialize_node($parent_node);
             push @candidates, $parent_node;
         }
 
         # Initialize readability data for the grandparent.
-        if ( $grand_parent_node
-                 && $grand_parent_node->{_readability}
-                     && $grand_parent_node->tag
-                 ) {
+        if ( $grand_parent_node &&
+             not defined $grand_parent_node->attr('readability') &&
+             $grand_parent_node->tag
+         ) {
             $self->initialize_node($grand_parent_node);
             push @candidates, $grand_parent_node;
         }
@@ -480,10 +528,13 @@ sub grab_article {
         $content_score += min( int( length($inner_text) / 100), 3 );
 
         #Add the score to the parent. The grandparent gets half. */
-        $parent_node->{_readability}->{content_score} += $content_score;
+        $parent_node->attr('readability', $parent_node->attr('readability') + $content_score);
 
         if ( $grand_parent_node ) {
-            $grand_parent_node->{_readability}->{content_score} += $content_score/2;
+            $grand_parent_node->attr(
+                'readability',
+                $grand_parent_node->attr('readability') + $content_score/2
+            );
         }
     }
 
@@ -493,13 +544,21 @@ sub grab_article {
     for my $candidate (@candidates) {
         #Scale the final candidates score based on link density. Good content should have a
         #relatively small link density (5% or less) and be mostly unaffected by this operation.
+        if ( $self->debug ) {
+            warn 'Candidate: ' . $candidate . " (" .
+                ($candidate->attr('class') || '') . ":" . ( $candidate->id || '' ). ") with score " .
+                $candidate->attr('readability');
+        }
 
-        $candidate->{_readability}{content_score}
-            *= ( 1 - $self->get_link_density($candidate) );
+        $candidate->attr(
+            'readability',
+            $candidate->attr('readability') * ( 1 - $self->get_link_density($candidate) )
+        );
+
 
         if ( !$top_candidate ||
-                 $candidate->{_readability}{content_score} > $top_candidate->{_readability}{content_score} 
-             ) {
+             $candidate->attr('readability') > $top_candidate->attr('readability')
+         ) {
             $top_candidate = $candidate;
         }
     }
@@ -520,7 +579,7 @@ sub grab_article {
 
     my $article_content  = HTML::Element->new("div");
     my $sibling_score_threshold
-        = max(10, $top_candidate->{_readability}{content_score} * 0.2);
+        = max(10, $top_candidate->attr('readability') * 0.2);
     my @sibling_nodes = $top_candidate->parent->content_list;
     for my $sibling_node (@sibling_nodes) {
         my $append = 0;
@@ -538,12 +597,12 @@ sub grab_article {
              $top_candidate->attr('class') &&
              $sibling_node->attr('class') eq $top_candidate->attr('class') &&
              $top_candidate->attr('class') ne "") {
-            $content_bonus += $top_candidate->{_readability}{content_score} * 0.2;
+             $content_bonus += $top_candidate->attr('readability') * 0.2;
         }
 
-        if ( $sibling_node->{_readability} &&
-                 $sibling_node->{_readability}{content_score} + $content_bonus >= $sibling_score_threshold
-             ) {
+        if ( $sibling_node->attr('readability') &&
+             $sibling_node->attr('readability') + $content_bonus >= $sibling_score_threshold
+         ) {
             $append = 1;
         }
 
@@ -579,17 +638,12 @@ sub grab_article {
         }
     }
     #So we have all of the content that we need. Now we clean it up for presentation.
-    warn 'Before PREP';
-    warn $article_content->as_XML;
-    warn 'Before PREP';
     $self->prep_article($article_content);
 
     # Now that we've gone through the full algorithm, check to see if we got any meaningful content.
     # If we didn't, we may need to re-run grabArticle with different flags set. This gives us a higher
     # likelihood of finding the content, and the sieve approach gives us a higher likelihood of
     # finding the -right- content.
-
-    warn $self->get_inner_text($article_content, 0);
 
     if ( length $self->get_inner_text($article_content, 0) < 250) {
         $page->inner_HTML($page_cache_html);
@@ -613,24 +667,28 @@ sub grab_article {
 sub simplify {
     my ($self, $html) = @_;
     $self->document = HTML::TreeBuilder->new_from_content($html) if $html;
+
+    $self->prep_document;
+    $self->remove_scripts($self->document);
+
     return $self->grab_article($html);
 }
 
+sub get_title {
+    my $self = shift;
+    return $self->get_article_title;
+}
+
+
 sub get_inner_text {
     my ($self, $e, $normalize_spaces) = @_;
-    my $text_content = "";
-
-    for ($e->content_list) {
-        unless ( ref $_ ) {
-            $text_content .= $_;
-        }
-    }
+    my $text_content = $e->as_text;
 
     $normalize_spaces = 1 unless defined $normalize_spaces;
-    $text_content =~ s/$HTML::Simplify::Regexp::trim//;
+    $text_content =~ s/$HTML::Simplify::Regexp::trim//gi;
 
     if ($normalize_spaces) {
-        $text_content =~ s/$HTML::Simplify::Regexp::normalize//;
+        $text_content =~ s/$HTML::Simplify::Regexp::normalize//gi;
     }
     return $text_content;
 }
