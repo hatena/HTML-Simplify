@@ -327,7 +327,9 @@ sub clean_conditionally {
             }
 
             if( $to_remove ) {
-                warn 'DELETE By Cleaning Conditinally';
+                if ( $self->debug ) {
+                    warn 'DELETE By Cleaning Conditinally';
+                }
                 $cur_elm->delete;
             }
         }
