@@ -242,9 +242,9 @@ sub clean_styles {
 
 sub kill_breaks {
     my ($self, $e) = @_;
-    my $inner = $e->inner_HTML;
+    my $inner = $self->inner_HTML($e);
     $inner =~ s!$HTML::Simplify::Regexp::kill_breaks!<br />!;
-    $e->inner_HTML( $inner );
+    $self->inner_HTML($e, $inner);
 }
 
 sub get_char_count {
@@ -354,7 +354,7 @@ sub clean {
                 next;
             }
             # Then check the elements inside this element for the same.
-            if ( $cur_elm->inner_HTML !~ $HTML::Simplify::Regexp::videos ) {
+            if ( $self->inner_HTML($cur_elm) !~ $HTML::Simplify::Regexp::videos ) {
                 next;
             }
         }
@@ -414,9 +414,9 @@ sub prep_article {
             $ap->delete;
         }
     }
-    my $inner = $article_content->inner_HTML;
+    my $inner = $self->inner_HTML($article_content);
     $inner =~ s/<br[^>]*>\s*<p/<p/gi;
-    $article_content->inner_HTML($inner);
+    $self->inner_HTML($article_content,$inner);
 }
 
 sub grab_article {
@@ -457,7 +457,7 @@ sub grab_article {
 
         #Turn all divs that don't have children block level elements into p's
         if ( $node->tag && $node->tag eq "div") {
-            if ($node->inner_HTML !~ /$HTML::Simplify::Regexp::div_to_p_elements/g ) {
+            if ($self->inner_HTML($node) !~ /$HTML::Simplify::Regexp::div_to_p_elements/g ) {
                 $node->tag('p');
                 push @nodes_to_score, $node;
             } else {
@@ -569,8 +569,8 @@ sub grab_article {
 
     if ( !$top_candidate || $top_candidate->tag eq "body") {
         $top_candidate = HTML::Element->new("div");
-        $top_candidate->inner_HTML($page->inner_HTML);
-        $page->inner_HTML("");
+        $self->inner_HTML($top_candidate,$self->inner_HTML($page));
+        $self->inner_HTML($page,"");
         $page->push_content($top_candidate);
         $self->initialize_node($top_candidate);
     }
@@ -647,7 +647,7 @@ sub grab_article {
     # finding the -right- content.
 
     if ( length $self->get_inner_text($article_content, 0) < 250) {
-        $page->inner_HTML($page_cache_html);
+        $self->inner_HTML($page,$page_cache_html);
 
         if ( $self->flag_is_active(FLAG_STRIP_UNLIKELYS) ) {
             $self->remove_flag(FLAG_STRIP_UNLIKELYS);
@@ -693,21 +693,19 @@ sub get_inner_text {
     }
     return $text_content;
 }
-1;
 
-package HTML::Element;
 sub inner_HTML {
-    my ($self, $html)  = @_;
+    my ($self, $e, $html)  = @_;
     if ($html) {
-        $self->delete_content;
+        $e->delete_content;
         my $new_node = HTML::TreeBuilder->new_from_content($html);
         my @elms = $new_node->find('body')->content_list;
         for (@elms) {
-            $self->push_content($_);
+            $e->push_content($_);
         }
     }
 
-    my @children = $self->content_list;
+    my @children = $e->content_list;
     my $res = '';
     for (@children) {
         if ( ref $_ eq 'HTML::Element' ) {
@@ -717,6 +715,11 @@ sub inner_HTML {
         }
     }
     return $res;
+}
+
+sub DESTROY {
+    my $self = shift;
+    $self->document->delete();
 }
 
 1;
