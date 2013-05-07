@@ -25,6 +25,6 @@ sub simplify : Tests {
     }
 }
 
-__PACKAGE__->runtest;
-1;
+__PACKAGE__->runtests();
 
+1;
