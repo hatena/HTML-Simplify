@@ -8,7 +8,7 @@ use HTML::Element;
 
 use HTML::Simplify::Regexp;
 
-use base qw/Class::Accessor::Lvalue::Fast/;
+use parent qw( Class::Accessor::Lvalue::Fast );
 __PACKAGE__->mk_accessors(qw/document flags debug/);
 
 use constant FLAG_STRIP_UNLIKELYS => 0x1;

@@ -5,8 +5,7 @@ use Test::More;
 use File::Slurp;
 use HTML::Simplify;
 
-use base qw/Test::Class/;
-
+use parent qw( Test::Class );
 
 sub simplify : Tests {
 

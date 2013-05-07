@@ -6,7 +6,7 @@ use Test::More;
 use File::Slurp;
 use HTML::Simplify;
 use Encode qw/encode_utf8 decode_utf8/;
-use base qw/Test::Class/;
+use parent qw( Test::Class );
 
 sub getArticleTitle : Tests {
     my $html = <<EOT;
